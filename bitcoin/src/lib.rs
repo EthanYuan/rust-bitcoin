@@ -102,6 +102,7 @@ pub mod bip152;
 pub mod bip158;
 pub mod bip32;
 pub mod blockdata;
+pub mod dogecoin;
 pub mod consensus;
 // Private until we either make this a crate or flatten it - still to be decided.
 pub(crate) mod crypto;
