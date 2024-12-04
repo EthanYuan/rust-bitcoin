@@ -64,6 +64,14 @@ pub struct DogecoinHeader {
     pub auxpow: Option<AuxPow>,
 }
 
+impl DogecoinHeader {
+    /// Returns the block hash of the header.
+    pub fn block_hash(&self) -> BlockHash {
+        let pure_header: Header = self.clone().into();
+        pure_header.block_hash()
+    }
+}
+
 impl Decodable for DogecoinHeader {
     #[inline]
     fn consensus_decode_from_finite_reader<R: Read + ?Sized>(
