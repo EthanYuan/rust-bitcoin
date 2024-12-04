@@ -136,3 +136,17 @@ impl From<DogecoinHeader> for Header {
         }
     }
 }
+
+impl From<Header> for DogecoinHeader {
+    fn from(header: Header) -> Self {
+        DogecoinHeader {
+            version: header.version,
+            prev_blockhash: header.prev_blockhash,
+            merkle_root: header.merkle_root,
+            time: header.time,
+            bits: header.bits,
+            nonce: header.nonce,
+            auxpow: None,
+        }
+    }
+}
