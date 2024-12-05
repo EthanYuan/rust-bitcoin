@@ -4,10 +4,11 @@ use crate::consensus::{
     encode::{self, MAX_VEC_SIZE},
     Decodable, Encodable,
 };
-pub use crate::hash_types::BlockHash;
 use crate::hash_types::TxMerkleNode;
+pub use crate::hash_types::{BlockHash, Txid};
 use crate::internal_macros::impl_consensus_encoding;
 use crate::io::{self, Read, Write};
+use crate::merkle_tree::PartialMerkleTree;
 use crate::pow::CompactTarget;
 use crate::prelude::*;
 
@@ -62,6 +63,20 @@ pub struct DogecoinHeader {
     pub nonce: u32,
     /// The auxpow info
     pub auxpow: Option<AuxPow>,
+}
+
+/// Data structure that represents a block header paired to a partial merkle tree.
+///
+/// NOTE: This assumes that the given Block has *at least* 1 transaction. If the Block has 0 txs,
+/// it will hit an assertion.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct DogeMerkleBlock {
+    /// The block header
+    pub header: DogecoinHeader,
+    /// Transactions making up a partial merkle tree
+    pub txn: PartialMerkleTree,
+    /// Transactions that matched the filter
+    pub matched_txn: Vec<(u32, Txid)>,
 }
 
 impl DogecoinHeader {
@@ -125,7 +140,7 @@ impl Encodable for DogecoinHeader {
         len += self.bits.consensus_encode(s)?;
         len += self.nonce.consensus_encode(s)?;
         if self.version.to_consensus() & (1 << 8) != 0 {
-            len += self.auxpow.as_ref().unwrap().consensus_encode(s)?;
+            len += self.auxpow.as_ref().expect("auxpow").consensus_encode(s)?;
         }
 
         Ok(len)
@@ -156,5 +171,45 @@ impl From<Header> for DogecoinHeader {
             nonce: header.nonce,
             auxpow: None,
         }
+    }
+}
+
+impl Encodable for Vec<(u32, Txid)> {
+    fn consensus_encode<W: io::Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
+        let mut len = 0;
+        for item in self {
+            len += item.consensus_encode(w)?;
+        }
+        Ok(len)
+    }
+}
+
+impl Decodable for Vec<(u32, Txid)> {
+    fn consensus_decode<R: io::Read + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
+        let mut vec = Vec::new();
+        while let Ok(item) = Decodable::consensus_decode(r) {
+            vec.push(item);
+        }
+        Ok(vec)
+    }
+}
+
+impl Encodable for DogeMerkleBlock {
+    fn consensus_encode<W: io::Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
+        let mut len = 0;
+        len += self.header.consensus_encode(w)?;
+        len += self.txn.consensus_encode(w)?;
+        len += self.matched_txn.consensus_encode(w)?;
+        Ok(len)
+    }
+}
+
+impl Decodable for DogeMerkleBlock {
+    fn consensus_decode<R: io::Read + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
+        Ok(DogeMerkleBlock {
+            header: Decodable::consensus_decode(r)?,
+            txn: Decodable::consensus_decode(r)?,
+            matched_txn: Decodable::consensus_decode(r)?,
+        })
     }
 }
