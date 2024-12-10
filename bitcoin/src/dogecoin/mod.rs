@@ -1,3 +1,7 @@
+//! Dogecoin-specific data structures and functions.
+
+use core::fmt;
+
 use crate::blockdata::block::{Header, Version};
 use crate::blockdata::transaction::Transaction;
 use crate::consensus::{
@@ -9,8 +13,60 @@ pub use crate::hash_types::{BlockHash, Txid};
 use crate::internal_macros::impl_consensus_encoding;
 use crate::io::{self, Read, Write};
 use crate::merkle_tree::PartialMerkleTree;
-use crate::pow::CompactTarget;
+use crate::pow::{CompactTarget, Target, U256};
 use crate::prelude::*;
+
+/// Implement traits and methods shared by `Target` and `Work`.
+macro_rules! do_impl {
+    ($ty:ident) => {
+        impl $ty {
+            /// Creates `Self` from a big-endian byte array.
+            #[inline]
+            pub fn from_be_bytes(bytes: [u8; 32]) -> $ty {
+                $ty(U256::from_be_bytes(bytes))
+            }
+
+            /// Creates `Self` from a little-endian byte array.
+            #[inline]
+            pub fn from_le_bytes(bytes: [u8; 32]) -> $ty {
+                $ty(U256::from_le_bytes(bytes))
+            }
+
+            /// Converts `self` to a big-endian byte array.
+            #[inline]
+            pub fn to_be_bytes(self) -> [u8; 32] {
+                self.0.to_be_bytes()
+            }
+
+            /// Converts `self` to a little-endian byte array.
+            #[inline]
+            pub fn to_le_bytes(self) -> [u8; 32] {
+                self.0.to_le_bytes()
+            }
+        }
+
+        impl fmt::Display for $ty {
+            #[inline]
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::Display::fmt(&self.0, f)
+            }
+        }
+
+        impl fmt::LowerHex for $ty {
+            #[inline]
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::LowerHex::fmt(&self.0, f)
+            }
+        }
+
+        impl fmt::UpperHex for $ty {
+            #[inline]
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::UpperHex::fmt(&self.0, f)
+            }
+        }
+    };
+}
 
 /// The auxpow
 #[derive(PartialEq, Eq, Clone, Debug, PartialOrd, Ord, Hash)]
@@ -211,5 +267,37 @@ impl Decodable for DogeMerkleBlock {
             txn: Decodable::consensus_decode(r)?,
             matched_txn: Decodable::consensus_decode(r)?,
         })
+    }
+}
+
+/// A 256 bit integer representing target.
+///
+/// The SHA-256 hash of a block's header must be lower than or equal to the current target for the
+/// block to be accepted by the network. The lower the target, the more difficult it is to generate
+/// a block. (See also [`Work`].)
+///
+/// ref: <https://en.bitcoin.it/wiki/Target>
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(crate = "actual_serde"))]
+pub struct DogecoinTarget(U256);
+
+impl DogecoinTarget {
+    /// The maximum possible target.
+    ///
+    /// This value is used to calculate difficulty, which is defined as how difficult the current
+    /// target makes it to find a block relative to how difficult it would be at the highest
+    /// possible target. Remember highest target == lowest difficulty.
+    ///
+    /// ref: <https://en.bitcoin.it/wiki/Target>
+    // In Dogecoind this is ~(u256)0 >> 20 stored as a floating-point type so it gets truncated, hence
+    // the low 220 bits are all zero.
+    pub const MAX: Self = DogecoinTarget(U256(0xFFFF_u128 << (220 - 128), 0));
+}
+do_impl!(DogecoinTarget);
+
+impl From<DogecoinTarget> for Target {
+    fn from(target: DogecoinTarget) -> Target {
+        Target(target.0)
     }
 }
