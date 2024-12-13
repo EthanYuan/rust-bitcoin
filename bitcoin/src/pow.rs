@@ -308,7 +308,7 @@ impl Decodable for CompactTarget {
 /// Big-endian 256 bit integer type.
 // (high, low): u.0 contains the high bits, u.1 contains the low bits.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub(crate) struct U256(pub u128, pub u128);
+pub struct U256(pub u128, pub u128);
 
 impl U256 {
     const MAX: U256 =

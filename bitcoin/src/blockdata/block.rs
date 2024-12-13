@@ -122,7 +122,7 @@ impl fmt::Debug for Header {
 #[derive(Copy, PartialEq, Eq, Clone, Debug, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(crate = "actual_serde"))]
-pub struct Version(i32);
+pub struct Version(pub i32);
 
 impl Version {
     /// The original Bitcoin Block v1.
@@ -433,6 +433,8 @@ pub enum ValidationError {
     BadProofOfWork,
     /// The `target` field of a block header did not match the expected difficulty.
     BadTarget,
+    /// No auxpow on block with auxpow version.
+    BadVersion,
 }
 
 impl fmt::Display for ValidationError {
@@ -442,6 +444,7 @@ impl fmt::Display for ValidationError {
         match *self {
             BadProofOfWork => f.write_str("block target correct but not attained"),
             BadTarget => f.write_str("block target incorrect"),
+            BadVersion => f.write_str("block version incorrect"),
         }
     }
 }
@@ -452,7 +455,7 @@ impl std::error::Error for ValidationError {
         use self::ValidationError::*;
 
         match *self {
-            BadProofOfWork | BadTarget => None,
+            BadProofOfWork | BadTarget | BadVersion => None,
         }
     }
 }
