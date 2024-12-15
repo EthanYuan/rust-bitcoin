@@ -435,6 +435,8 @@ pub enum ValidationError {
     BadTarget,
     /// No auxpow on block with auxpow version.
     BadVersion,
+    /// The block has an invalid auxpow.
+    BadAuxPow,
 }
 
 impl fmt::Display for ValidationError {
@@ -445,6 +447,7 @@ impl fmt::Display for ValidationError {
             BadProofOfWork => f.write_str("block target correct but not attained"),
             BadTarget => f.write_str("block target incorrect"),
             BadVersion => f.write_str("block version incorrect"),
+            BadAuxPow => f.write_str("block has invalid auxpow"),
         }
     }
 }
@@ -455,7 +458,7 @@ impl std::error::Error for ValidationError {
         use self::ValidationError::*;
 
         match *self {
-            BadProofOfWork | BadTarget | BadVersion => None,
+            BadProofOfWork | BadTarget | BadVersion | BadAuxPow => None,
         }
     }
 }

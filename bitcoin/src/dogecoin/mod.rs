@@ -1,5 +1,6 @@
 //! Dogecoin-specific data structures and functions.
 
+use core::convert::TryInto;
 use core::fmt;
 use scrypt::{scrypt, Params};
 
@@ -11,12 +12,14 @@ use crate::consensus::{
 };
 use crate::hash_types::TxMerkleNode;
 pub use crate::hash_types::{BlockHash, Txid};
-use crate::hashes::Hash;
+use crate::hashes::{sha256d, Hash, HashEngine};
 use crate::internal_macros::impl_consensus_encoding;
 use crate::io::{self, Read, Write};
 use crate::merkle_tree::PartialMerkleTree;
 use crate::pow::{CompactTarget, Target, U256};
 use crate::prelude::*;
+
+const MERGED_MINING_HEADER: &[u8] = b"\xfa\xbe\x6d\x6d";
 
 /// Implement traits and methods shared by `Target` and `Work`.
 macro_rules! do_impl {
@@ -81,8 +84,8 @@ pub struct AuxPow {
     pub block_hash: BlockHash,
     /// The Merkle branch of the coinbase tx to the parent block's root.
     pub coinbase_branch: Vec<TxMerkleNode>,
-    /// N index
-    pub n_index: i32,
+    /// Coinbase index
+    pub coinbase_index: i32,
     /// The merkle branch connecting the aux block to our coinbase.
     pub blockchain_branch: Vec<TxMerkleNode>,
     /// Merkle tree index of the aux block header in the coinbase.
@@ -96,7 +99,7 @@ impl_consensus_encoding!(
     coinbase_tx,
     block_hash,
     coinbase_branch,
-    n_index,
+    coinbase_index,
     blockchain_branch,
     chain_index,
     parent_block_header
@@ -104,15 +107,170 @@ impl_consensus_encoding!(
 
 impl AuxPow {
     /// Returns the block hash of the header.
-    pub fn check(&self) -> bool {
-        // Todo: Implement AuxPow check
-        true
+    pub fn check(
+        &self,
+        is_strict_chain_id: bool,
+        block_hash: BlockHash,
+    ) -> Result<(), ValidationError> {
+        if self.coinbase_index != 0 {
+            return Err(ValidationError::BadAuxPow);
+        }
+
+        // Aux POW parent cannot has our chain ID 0x0062
+        if is_strict_chain_id && self.parent_block_header.get_chain_id() == 98 {
+            return Err(ValidationError::BadAuxPow);
+        }
+
+        // Check that the blockchain branch is valid
+        if self.blockchain_branch.len() > 30 {
+            return Err(ValidationError::BadAuxPow);
+        }
+
+        // Check that the chain merkle root is in the coinbase
+        let chain_root_hash = check_merkle_branch(
+            block_hash.to_raw_hash(),
+            &self.blockchain_branch,
+            self.chain_index,
+        )?;
+        let mut reversed_chain_root_hash = chain_root_hash.to_byte_array();
+        reversed_chain_root_hash.reverse();
+
+        // Check that we are in the parent block merkle tree
+        if self.parent_block_header.merkle_root
+            != check_merkle_branch(
+                self.coinbase_tx.txid().into(),
+                &self.coinbase_branch,
+                self.coinbase_index,
+            )?
+            .into()
+        {
+            return Err(ValidationError::BadAuxPow);
+        }
+
+        // Extract the coinbase script and ensure it contains the merged mining header and root hash
+        let script = self.coinbase_tx.input[0].script_sig.to_bytes();
+
+        // Find merged mining header
+        let mm_header_pos = script
+            .windows(MERGED_MINING_HEADER.len())
+            .position(|window| window == MERGED_MINING_HEADER);
+
+        // Check for chain merkle root in coinbase
+        let root_hash_pos = script
+            .windows(reversed_chain_root_hash.len())
+            .position(|window| window == reversed_chain_root_hash);
+        if root_hash_pos.is_none() {
+            return Err(ValidationError::BadAuxPow);
+        }
+
+        if let Some(header_pos) = mm_header_pos {
+            // Enforce only one chain merkle root by checking that a single instance of the merged
+            // mining header exists just before.
+            let second_mm_header = script
+                .iter()
+                .skip(header_pos + MERGED_MINING_HEADER.len())
+                .position(|&b| b == MERGED_MINING_HEADER[0]);
+
+            if second_mm_header.is_some() {
+                return Err(ValidationError::BadAuxPow);
+            }
+            if header_pos + MERGED_MINING_HEADER.len() != root_hash_pos.unwrap() {
+                return Err(ValidationError::BadAuxPow);
+            }
+        } else {
+            // For backward compatibility.
+            // Enforce only one chain merkle root by checking that it starts early in the coinbase.
+            // 8-12 bytes are enough to encode extraNonce and nBits.
+            if root_hash_pos.unwrap() > 20 {
+                return Err(ValidationError::BadAuxPow);
+            }
+        }
+
+        // Ensure we are at a deterministic point in the merkle leaves by hashing
+        // a nonce and our chain ID and comparing to the index.
+        let remaining = &script[root_hash_pos.unwrap() + reversed_chain_root_hash.len()..];
+        if remaining.len() < 8 {
+            return Err(ValidationError::BadAuxPow);
+        }
+        let merkle_size = u32::from_le_bytes(remaining[0..4].try_into().unwrap());
+        let nonce = u32::from_le_bytes(remaining[4..8].try_into().unwrap());
+        if merkle_size != (1 << self.blockchain_branch.len()) as u32 {
+            return Err(ValidationError::BadAuxPow);
+        }
+        if self.chain_index as u32 != get_expected_index(nonce, 98, self.blockchain_branch.len()) {
+            return Err(ValidationError::BadAuxPow);
+        }
+
+        Ok(())
     }
 }
 
+/// Merkle branch verification based on the provided `TxMerkleNode` and the index
+fn check_merkle_branch(
+    hash: sha256d::Hash,
+    branch: &[TxMerkleNode],
+    index: i32,
+) -> Result<sha256d::Hash, ValidationError> {
+    if index < 0 {
+        return Err(ValidationError::BadAuxPow);
+    }
+
+    let mut current_hash = hash;
+    let mut idx = index as usize;
+    for merkle_node in branch {
+        if idx & 1 == 1 {
+            current_hash = hash_internal(merkle_node.to_raw_hash(), current_hash)?;
+        } else {
+            current_hash = hash_internal(current_hash, merkle_node.to_raw_hash())?;
+        }
+        idx >>= 1;
+    }
+
+    Ok(current_hash.into())
+}
+
+/// Helper function to handle hash operation between two nodes in the Merkle branch
+fn hash_internal(
+    left: sha256d::Hash,
+    right: sha256d::Hash,
+) -> Result<sha256d::Hash, ValidationError> {
+    // Here you would hash the concatenation of the two hashes
+    let mut hasher = sha256d::Hash::engine();
+    hasher.input(left.as_ref());
+    hasher.input(right.as_ref());
+    Ok(sha256d::Hash::from_engine(hasher))
+}
+
+/// Chooses a pseudo-random slot in the chain merkle tree,
+/// but ensures it is fixed for a given size/nonce/chain combination.
+///
+/// This prevents the same work from being reused for the same chain
+/// and reduces the likelihood of two chains clashing for the same slot.
+///
+/// Note:
+/// - This computation can overflow the `u32` used. However, this is not an issue,
+///   since the result is taken modulo a power-of-two, ensuring consistency.
+/// - The computation remains consistent even if performed in 64 bits,
+///   as it was on some systems in the past.
+/// - The `h` parameter is always <= 30, as enforced by the maximum allowed chain
+///   merkle branch length, so 32 bits are sufficient for the computation.
+fn get_expected_index(n_nonce: u32, n_chain_id: u32, h: usize) -> u32 {
+    let mut rand = n_nonce;
+    rand = rand.wrapping_mul(1103515245).wrapping_add(12345);
+    rand = rand.wrapping_add(n_chain_id);
+    rand = rand.wrapping_mul(1103515245).wrapping_add(12345);
+
+    rand % (1 << h)
+}
+
 impl Header {
+    /// Returns the chain id of the block.
+    pub fn get_chain_id(&self) -> i32 {
+        self.version.0 >> 16
+    }
+
     /// Returns the block hash.
-    pub fn pow_hash(&self) -> BlockHash {
+    pub fn block_pow_hash(&self) -> BlockHash {
         // Serialize Header into a byte vector
         let mut header_data = Vec::new();
         self.consensus_encode(&mut header_data).expect("Failed to serialize Header");
@@ -132,7 +290,7 @@ impl Header {
 
     /// Checks that the proof-of-work for the block is valid, returning the block hash.
     pub fn validate_doge_pow(&self, required_target: Target) -> Result<BlockHash, ValidationError> {
-        let pow_hash = self.pow_hash();
+        let pow_hash = self.block_pow_hash();
         if required_target.is_met_by(pow_hash) {
             Ok(self.block_hash())
         } else {
@@ -201,9 +359,20 @@ impl DogecoinHeader {
     }
 
     /// Checks that the proof-of-work for the block is valid, returning the block hash.
-    pub fn validate_doge_pow(&self) -> Result<BlockHash, ValidationError> {
+    pub fn validate_doge_pow(
+        &self,
+        is_strict_chain_id: bool,
+    ) -> Result<BlockHash, ValidationError> {
+        // Dogecoin main fStrictChainId set true
+        // Dogecoin testnet fStrictChainId set false
+        // Dogecoin main/testnet nAuxpowChainId set 0x0062
+        if !self.is_legacy() && is_strict_chain_id && self.get_chain_id() != 98 {
+            return Err(ValidationError::BadVersion);
+        }
+
         let pure_header: Header = self.clone().into();
 
+        // Check that the proof-of-work is correct
         if self.auxpow.is_none() {
             if self.is_auxpow() {
                 return Err(ValidationError::BadVersion);
@@ -211,13 +380,15 @@ impl DogecoinHeader {
             return pure_header.validate_doge_pow(pure_header.target());
         }
 
+        // Check auxpow
         if !self.is_auxpow() {
             return Err(ValidationError::BadVersion);
         }
-
-        // Check that the parent block's proof-of-work is correct
         let auxpow = self.auxpow.as_ref().expect("auxpow");
+        auxpow.check(is_strict_chain_id, pure_header.block_hash())?;
+        // Check that the parent block's proof-of-work is correct
         auxpow.parent_block_header.validate_doge_pow(pure_header.target())?;
+
         Ok(self.block_hash())
     }
 }
@@ -396,7 +567,7 @@ mod tests {
             deserialize(&doge_header).expect("Can't deserialize correct block header");
         let pure_header: Header = doge_header.clone().into();
         assert!(!doge_header.is_auxpow());
-        assert_eq!(doge_header.validate_doge_pow().unwrap(), doge_header.block_hash());
+        assert_eq!(doge_header.validate_doge_pow(false).unwrap(), doge_header.block_hash());
 
         // test with modified header
         let mut invalid_header: Header = pure_header;
@@ -415,7 +586,7 @@ mod tests {
             deserialize(&doge_header).expect("Can't deserialize correct block header");
         let pure_header: Header = doge_header.clone().into();
         assert!(doge_header.is_auxpow());
-        assert_eq!(doge_header.validate_doge_pow().unwrap(), doge_header.block_hash());
+        assert_eq!(doge_header.validate_doge_pow(false).unwrap(), doge_header.block_hash());
 
         // test with modified header
         let mut invalid_header: Header = pure_header;
@@ -434,7 +605,7 @@ mod tests {
             deserialize(&doge_header).expect("Can't deserialize correct block header");
         let pure_header: Header = doge_header.clone().into();
         assert!(doge_header.is_auxpow());
-        assert_eq!(doge_header.validate_doge_pow().unwrap(), doge_header.block_hash());
+        assert_eq!(doge_header.validate_doge_pow(true).unwrap(), doge_header.block_hash());
 
         // test with modified header
         let mut invalid_header: Header = pure_header;
