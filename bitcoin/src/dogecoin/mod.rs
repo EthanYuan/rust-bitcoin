@@ -113,17 +113,17 @@ impl AuxPow {
         block_hash: BlockHash,
     ) -> Result<(), ValidationError> {
         if self.coinbase_index != 0 {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("coinbase_index".to_string()));
         }
 
         // Aux POW parent cannot has our chain ID 0x0062
         if is_strict_chain_id && self.parent_block_header.get_chain_id() == 98 {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("chain_id".to_string()));
         }
 
         // Check that the blockchain branch is valid
         if self.blockchain_branch.len() > 30 {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("blockchain_branch length".to_string()));
         }
 
         // Check that the chain merkle root is in the coinbase
@@ -144,7 +144,7 @@ impl AuxPow {
             )?
             .into()
         {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("coinbase_branch".to_string()));
         }
 
         // Extract the coinbase script and ensure it contains the merged mining header and root hash
@@ -160,29 +160,29 @@ impl AuxPow {
             .windows(reversed_chain_root_hash.len())
             .position(|window| window == reversed_chain_root_hash);
         if root_hash_pos.is_none() {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("reversed_chain_root_hash".to_string()));
         }
 
         if let Some(header_pos) = mm_header_pos {
             // Enforce only one chain merkle root by checking that a single instance of the merged
             // mining header exists just before.
             let second_mm_header = script
-                .iter()
-                .skip(header_pos + MERGED_MINING_HEADER.len())
-                .position(|&b| b == MERGED_MINING_HEADER[0]);
+                .windows(MERGED_MINING_HEADER.len())
+                .skip(header_pos + 1)
+                .position(|window| window == MERGED_MINING_HEADER);
 
             if second_mm_header.is_some() {
-                return Err(ValidationError::BadAuxPow);
+                return Err(ValidationError::BadAuxPow("second_mm_header".to_string()));
             }
             if header_pos + MERGED_MINING_HEADER.len() != root_hash_pos.unwrap() {
-                return Err(ValidationError::BadAuxPow);
+                return Err(ValidationError::BadAuxPow("root_hash_pos".to_string()));
             }
         } else {
             // For backward compatibility.
             // Enforce only one chain merkle root by checking that it starts early in the coinbase.
             // 8-12 bytes are enough to encode extraNonce and nBits.
             if root_hash_pos.unwrap() > 20 {
-                return Err(ValidationError::BadAuxPow);
+                return Err(ValidationError::BadAuxPow("root_hash_pos > 20".to_string()));
             }
         }
 
@@ -190,15 +190,15 @@ impl AuxPow {
         // a nonce and our chain ID and comparing to the index.
         let remaining = &script[root_hash_pos.unwrap() + reversed_chain_root_hash.len()..];
         if remaining.len() < 8 {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("remaining".to_string()));
         }
         let merkle_size = u32::from_le_bytes(remaining[0..4].try_into().unwrap());
         let nonce = u32::from_le_bytes(remaining[4..8].try_into().unwrap());
         if merkle_size != (1 << self.blockchain_branch.len()) as u32 {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("merkle_size".to_string()));
         }
         if self.chain_index as u32 != get_expected_index(nonce, 98, self.blockchain_branch.len()) {
-            return Err(ValidationError::BadAuxPow);
+            return Err(ValidationError::BadAuxPow("chain_index".to_string()));
         }
 
         Ok(())
@@ -212,7 +212,7 @@ fn check_merkle_branch(
     index: i32,
 ) -> Result<sha256d::Hash, ValidationError> {
     if index < 0 {
-        return Err(ValidationError::BadAuxPow);
+        return Err(ValidationError::BadAuxPow("index < 0".to_string()));
     }
 
     let mut current_hash = hash;
@@ -601,6 +601,25 @@ mod tests {
     fn test_validate_pow_2_with_auxpow() {
         // Dogecoin header main 5,501,142
         let doge_header = hex!("04016200412c26f602b70017e8a4b8df573e850143f16fd8e547799101540fedf3474bf68ee4b62c1b2cdd9d650e8be0d04e38f508a30d554aae5fb8607ba3f2302a62eca33e5c67750a011a0000000001000000010000000000000000000000000000000000000000000000000000000000000000ffffffff6403bada2a2cfabe6d6d62fb5d7b198abb6a3ba76e2731c9fc8d39c4c1be723355d4ef38afaf788435ed20000000f09f909f092f4632506f6f6c2f64000000000000000000000000000000000000000000000000000000000000000000000005003a0000003a0000000243f64d25000000001976a914f2910ecaf7bb8d18ed71f0904e0e7456f29ce18288ac0000000000000000266a24aa21a9ededa2001e141501310bd65d715b1e1634836d5cf2dd8b7f4be8e2464b0c708200d9d54c408a7fed50b548c923b718f2c8c0624cd746fb7956ff14ef38d500000000000000072bac15b05f9a59ef4973b6ff8395bc8cbbaaeb5114bf2432ef41a54b381a37f7692723544f01d8318e2181dfc871c28b4aac62df419e425d52d383af8cf34b75df6f43453a9c549d992a57a421bf90d102b02738f6098cd0d2026c1e1650fc89e0a4513869f3b918f90aa6d50b68b8789724f7655aea0c47f82b389018cb20f6cfbe6d9c3fc681ec7630e47adbe74c96f924a9a196ee0ed081f4954ea037f5877160f870ea4ad6253f4e6ecbfe46c000d681a2b08cd3030e9c25b8a7eb6af4574afe2c8629186892dadd158eb5d01d382c77a3728990e4d2dee6aa04ed0ac40300000000050900000000000000000000000000000000000000000000000000000000000000710b1b3f2df407a200dd8321454575d9c8a35228a0cb34775aef1d44a656a7c88ac3fd572bb1c5b2322bcfe0ed1c1c5ac499605a9fe6531669d45366c3e47d92303c2636a3c1b1976e635394782eeace5b2821ed760340d053ba79e49f5e0d883b2e17be83df30a037cd6c6c9d9b93b1a966444089aa4d7e9db6208c0335fb860800000014000020a8f8f697ede59e98f94b1faf74e89d09605cfb4ce305a74ecff428feba6aaae59f2544fc5a6065bfef10bc520fc247f33428287e05f73b0136e943d4535715d7c03e5c6751284e195821988b");
+        let doge_header: DogecoinHeader =
+            deserialize(&doge_header).expect("Can't deserialize correct block header");
+        let pure_header: Header = doge_header.clone().into();
+        assert!(doge_header.is_auxpow());
+        assert_eq!(doge_header.validate_doge_pow(true).unwrap(), doge_header.block_hash());
+
+        // test with modified header
+        let mut invalid_header: Header = pure_header;
+        invalid_header.version.0 += 1;
+        match invalid_header.validate_doge_pow(invalid_header.target()) {
+            Err(ValidationError::BadProofOfWork) => (),
+            _ => panic!("unexpected result from validate_pow"),
+        }
+    }
+
+    #[test]
+    fn test_validate_pow_3_with_auxpow() {
+        // Dogecoin header main 5,503,356
+        let doge_header = hex!("040162002d67d4a7f9f7b79685cbad4ced924f1bcdee069a4edc4806d2791d64f7cd380ed7a97b2a055adb213c0bea7eb87d359897b2946c25e0ab17c2442b91320abd5e98615e67d9a8001a0000000001000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4603b6de2a04675e61982cfabe6d6dfaf83287b646cf15b636084786d525c0732f544996809b1070098c749488ab824000000000000000042f4c502f0a5700354718280e001828ffffffff02b2924125000000001976a91457757ed2d68143967543d7c58579c33e8984548888ac0000000000000000266a24aa21a9ed25a6d10925f47d9ba90a7ad2b66cd3b83e773df685ec813f50696107a7404ed1000000009e0947bc63afbf77006f86b1854cce152e08e52d12f6144f6cb8812b1513e1b6064a28fa3f8232bfd997eb95704f9d06380679ea1a645f6ceca9867b60882961a0c9f1b455d0e451edb53f8033e157c40f1770d94050e8441b56b09365065a1f7e0ce71ec4b48236bd840136e267dc4a287a1f914330301abb04b374a18e43955643c55c82ba76cb6b23f373cbc40ea34cdce37e11ead01731d9aec92c2ad22a4a324bc894f419274aad9284a84c968265f38e6fa76b6e400d743b9950ceb1011172685eb842f1f57b1f2f2a51f7250a38a876605ebdcf4957ce999e84c42cff1b00000000060000000000000000000000000000000000000000000000000000000000000000e2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf97d24db2bfa41474bfb2f877d688fac5faa5e10a2808cf9de307370b93352e54894857d3e08918f70395d9206410fbfa942f1a889aa5ab8188ec33c2f6e207dc719bf1203d3bf48393c69cc25598914bb9e0d302f363d9825dba0b9fb959ca33be38043ce34d95b004047b1cb5d8ea9ff5d6d06a9e84e51fbfd5e306b9a3d481838000000000000207de07544374b3ee2e81979eac15f96807c1e205dbd2b9bf9f50a5deefff2b4c859aa594f27601dd916cd9aa2b1b0624e320451a35978192247956581048018e798615e6751284e19402f0e72");
         let doge_header: DogecoinHeader =
             deserialize(&doge_header).expect("Can't deserialize correct block header");
         let pure_header: Header = doge_header.clone().into();

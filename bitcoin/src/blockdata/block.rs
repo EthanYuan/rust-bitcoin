@@ -436,18 +436,18 @@ pub enum ValidationError {
     /// No auxpow on block with auxpow version.
     BadVersion,
     /// The block has an invalid auxpow.
-    BadAuxPow,
+    BadAuxPow(String),
 }
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use ValidationError::*;
 
-        match *self {
+        match self {
             BadProofOfWork => f.write_str("block target correct but not attained"),
             BadTarget => f.write_str("block target incorrect"),
             BadVersion => f.write_str("block version incorrect"),
-            BadAuxPow => f.write_str("block has invalid auxpow"),
+            BadAuxPow(msg) => write!(f, "block has invalid auxpow: {}", msg),
         }
     }
 }
@@ -458,7 +458,7 @@ impl std::error::Error for ValidationError {
         use self::ValidationError::*;
 
         match *self {
-            BadProofOfWork | BadTarget | BadVersion | BadAuxPow => None,
+            BadProofOfWork | BadTarget | BadVersion | BadAuxPow(_) => None,
         }
     }
 }
